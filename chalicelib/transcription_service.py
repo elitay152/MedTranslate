@@ -1,80 +1,90 @@
 import boto3
-import json
 
 
-class TranscriptionService:
-    def __init__(self, storage_service):
-        self.rekognition_client = boto3.client('rekognition', region_name='us-east-2')  # For text detection in images
-        self.comprehend_medical_client = boto3.client('comprehendmedical')  # For medical entity detection
-        self.bucket_name = storage_service.get_storage_location()
-        self.storage_service = storage_service
+class TranslationService:
+    def __init__(self, comprehend_medical_client=None):
+        # Initialize Amazon Translate and optionally Comprehend Medical
+        self.translate_client = boto3.client('translate', region_name='us-east-2')
+        self.comprehend_medical_client = comprehend_medical_client or boto3.client('comprehendmedical')
 
-    def process_image(self, file_id):
+    def process_text(self, text, mode='full_text', source_language='auto', target_language='en'):
         """
-        Extract text from an image in S3 using Rekognition and analyze it with Comprehend Medical.
+        Translates full text or structured medical entities.
+        :param text: The input text to process.
+        :param mode: 'full_text' for full text translation or 'structured' for medical entities.
+        :param source_language: Source language code (default: 'auto').
+        :param target_language: Target language code (default: 'en').
+        :return: A dictionary with translation results.
         """
-        # Step 1: Extract text from the image using Amazon Rekognition
-        extracted_text = self.extract_text_from_image(file_id)
-        if not extracted_text:
-            return {"error": "No text detected in the image."}
+        if mode == 'full_text':
+            # Translate full text
+            return self.translate_full_text(text, source_language, target_language)
+        elif mode == 'structured':
+            # Analyze medical entities and translate them
+            return self.translate_medical_entities(text, source_language, target_language)
+        else:
+            return {"error": "Invalid mode specified. Use 'full_text' or 'structured'."}
 
-        # Step 2: Analyze the extracted text with Comprehend Medical
-        medical_entities = self.detect_medical_entities(extracted_text)
-
-        return {
-            "fileId": file_id,
-            "extractedText": extracted_text,
-            "medicalEntities": medical_entities
-        }
-
-    def extract_text_from_image(self, file_id):
+    def translate_full_text(self, text, source_language, target_language):
         """
-        Uses Amazon Rekognition to extract text from an image in the S3 bucket.
+        Translates the input text using Amazon Translate.
         """
         try:
-            # Use Rekognition to detect text in the image
-            response = self.rekognition_client.detect_text(
-                Image={
-                    'S3Object': {
-                        'Bucket': self.bucket_name,
-                        'Name': file_id
-                    }
-                }
+            response = self.translate_client.translate_text(
+                Text=text,
+                SourceLanguageCode=source_language,
+                TargetLanguageCode=target_language
             )
-
-            # Combine detected text from Rekognition response
-            extracted_text = " ".join([
-                item['DetectedText'] for item in response['TextDetections']
-                if item['Type'] == 'LINE'  # Focus on line-level text
-            ])
-
-            return extracted_text
-
+            return {
+                "mode": "full_text",
+                "originalText": text,
+                "translatedText": response['TranslatedText'],
+                "sourceLanguage": response['SourceLanguageCode'],
+                "targetLanguage": response['TargetLanguageCode']
+            }
         except Exception as e:
-            print(f"Error extracting text from image: {e}")
-            return None
+            print(f"Error translating full text: {e}")
+            return {"error": "Translation failed for full text."}
 
-    def detect_medical_entities(self, text):
+    def translate_medical_entities(self, text, source_language, target_language):
         """
-        Uses Amazon Comprehend Medical to analyze text and extract medical entities.
+        Detects medical entities in the text and translates their descriptions.
         """
         try:
-            # Call Comprehend Medical to detect entities in the extracted text
+            # Analyze text using Comprehend Medical
             response = self.comprehend_medical_client.detect_entities(Text=text)
 
-            # Extract medical entities from the response
-            medical_entities = []
+            # Collect and translate each medical entity's text
+            translated_entities = []
             for entity in response['Entities']:
-                medical_entities.append({
-                    "Text": entity['Text'],
-                    "Category": entity['Category'],
-                    "Type": entity['Type'],
-                    "Traits": entity.get('Traits', [])
-                })
+                translated_entity = {
+                    "originalText": entity['Text'],
+                    "category": entity['Category'],
+                    "type": entity['Type'],
+                    "traits": entity.get('Traits', [])
+                }
 
-            return medical_entities
+                # Translate the entity text
+                try:
+                    translation = self.translate_client.translate_text(
+                        Text=entity['Text'],
+                        SourceLanguageCode=source_language,
+                        TargetLanguageCode=target_language
+                    )
+                    translated_entity["translatedText"] = translation['TranslatedText']
+                except Exception as te:
+                    print(f"Error translating medical entity: {entity['Text']} - {te}")
+                    translated_entity["translatedText"] = "Translation failed."
 
+                translated_entities.append(translated_entity)
+
+            return {
+                "mode": "structured",
+                "originalText": text,
+                "medicalEntities": translated_entities,
+                "sourceLanguage": source_language,
+                "targetLanguage": target_language
+            }
         except Exception as e:
             print(f"Error detecting medical entities: {e}")
-            return []
-
+            return {"error": "Failed to process medical entities."}
