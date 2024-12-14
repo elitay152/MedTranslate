@@ -19,8 +19,7 @@ class StorageService:
         self.client.put_object(
             Bucket=self.bucket_name,
             Body=file_bytes,
-            Key=file_id,
-            ACL='public-read'
+            Key=file_id
         )
 
         # Return the unique file ID and public file URL
@@ -42,6 +41,5 @@ class StorageService:
 
         self.client.put_object_acl(
             Bucket=bucket_name,
-            Key=key,
-            ACL='public-read'
+            Key=key
         )
