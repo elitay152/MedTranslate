@@ -4,12 +4,12 @@ import json
 
 class TranscriptionService:
     def __init__(self, storage_service):
-        self.rekognition_client = boto3.client('rekognition')  # For text detection in images
+        self.rekognition_client = boto3.client('rekognition', region_name='us-east-2')  # For text detection in images
         self.comprehend_medical_client = boto3.client('comprehendmedical')  # For medical entity detection
         self.bucket_name = storage_service.get_storage_location()
         self.storage_service = storage_service
 
-    def process_image_with_comprehend_medical(self, file_id):
+    def process_image(self, file_id):
         """
         Extract text from an image in S3 using Rekognition and analyze it with Comprehend Medical.
         """
