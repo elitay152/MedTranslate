@@ -2,50 +2,59 @@ from chalice import Chalice, Response
 from chalicelib import storage_service
 from chalicelib import transcription_service
 from chalicelib import translation_service
-import json
+from chalicelib import speech_service
 
-####
-# chalice app configuration
+#####
+# Chalice app configuration
 #####
 app = Chalice(app_name='MedTranslate')
 app.debug = True
 
 #####
-# services initialization
+# Services initialization
 #####
-storage_location = 'medtranslate-storage'
+storage_location = 'medtranslate-storage-2'  # Replace with your S3 bucket name
 storage_service = storage_service.StorageService(storage_location)
 transcription_service = transcription_service.TranscriptionService(storage_service)
-translation_service = translation_service.FlexibleProcessingService(storage_service)
+processing_service = translation_service.FlexibleProcessingService(storage_service)
+speech_service = speech_service.SpeechService(storage_service)
 
 
-@app.route('/upload', methods=['POST'], content_types=['multipart/form-data'])
-def upload_file():
+@app.route('/upload/{file_name}', methods=['PUT'], content_types=['application/octet-stream'])
+def upload_to_s3(file_name):
     """
-    Endpoint to upload a file to S3 and return its file ID.
+    Uploads a raw binary file to S3.
     """
-    request = app.current_request
-    form_data = request.raw_body
-
-    # Parse multipart form data
-    content_type = request.headers['content-type']
-    boundary = content_type.split("boundary=")[-1]
-    parsed_form = parse_multipart(form_data, boundary)
-
-    # Extract file bytes and name
-    if 'file' not in parsed_form:
-        return Response(body={"error": "No file part in the request"}, status_code=400)
-
-    file_data = parsed_form['file']
-    original_file_name = file_data.filename
-    file_bytes = file_data.read()
-
     try:
-        # Upload the file to S3
-        result = storage_service.upload_file(file_bytes, original_file_name)
-        return {"fileId": result['fileId'], "fileUrl": result['fileUrl']}
+        # Get the raw body of the request
+        body = app.current_request.raw_body
+
+        # Upload the file to S3 directly
+        storage_service.upload_file(body, file_name)
+
+        # Create a public URL for the uploaded file
+        file_url = f'https://{storage_location}.s3.amazonaws.com/{file_name}'
+
+        # Respond with a success message and the file URL
+        response = {
+            'message': f'The file {file_name} was uploaded successfully.',
+            'fileUrl': file_url
+        }
+        return Response(
+            body=response,
+            status_code=200,
+            headers={'Access-Control-Allow-Origin': '*'}  # CORS support
+        )
     except Exception as e:
-        return Response(body={"error": f"File upload failed: {str(e)}"}, status_code=500)
+        # Handle errors gracefully
+        error_response = {
+            'error': f'Failed to upload file: {str(e)}'
+        }
+        return Response(
+            body=error_response,
+            status_code=500,
+            headers={'Access-Control-Allow-Origin': '*'}  # CORS support
+        )
 
 
 @app.route('/process', methods=['POST'])
@@ -69,7 +78,7 @@ def process_file():
     try:
         # Process the file based on the selected mode
         result = transcription_service.process_image(file_id, mode=mode, target_language=target_language)
-        return result
+        return Response(body=result, status_code=200)
     except Exception as e:
         return Response(body={"error": f"Processing failed: {str(e)}"}, status_code=500)
 
@@ -91,22 +100,30 @@ def translate_text():
 
     try:
         # Translate the provided text
-        translation_result = translation_service.translate_text(text, source_language, target_language)
-        return translation_result
+        translation_result = processing_service.translate_text(text, source_language, target_language)
+        return Response(body=translation_result, status_code=200)
     except Exception as e:
         return Response(body={"error": f"Translation failed: {str(e)}"}, status_code=500)
 
 
-def parse_multipart(form_data, boundary):
+@app.route('/synthesize', methods=['POST'])
+def synthesize_speech():
     """
-    Utility function to parse multipart form-data for Chalice.
+    Endpoint to convert translated text to speech.
     """
-    from werkzeug.formparser import parse_form_data
-    from io import BytesIO
+    request = app.current_request
+    data = request.json_body
 
-    env = {
-        'REQUEST_METHOD': 'POST',
-        'CONTENT_TYPE': f'multipart/form-data; boundary={boundary}',
-        'wsgi.input': BytesIO(form_data)
-    }
-    return parse_form_data(env)[1]
+    text = data.get('text')
+    target_language = data.get('targetLanguage', 'en')  # Default to English
+
+    if not text:
+        return Response(body={"error": "Text is required for speech synthesis."}, status_code=400)
+
+    try:
+        speech_url = speech_service.synthesize_speech(text, target_language)
+        return Response(body={"speechUrl": speech_url}, status_code=200)
+    except ValueError as ve:
+        return Response(body={"error": str(ve)}, status_code=400)
+    except RuntimeError as re:
+        return Response(body={"error": str(re)}, status_code=500)
